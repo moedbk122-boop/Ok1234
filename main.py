@@ -92,6 +92,7 @@ async def handler(event):
 async def hourly_summary():
     """
     Send a pinned summary at :05 past every hour.
+    Format: English translation first, then Arabic below, entries separated by blank line.
     """
     # Calculate the first trigger time (next :05)
     now = datetime.utcnow()
@@ -102,31 +103,36 @@ async def hourly_summary():
     await asyncio.sleep((next_run - datetime.utcnow()).total_seconds())
 
     while True:
-        # Snapshot and clear the entry list
         async with _summary_lock:
             entries = _summary_entries[:]
             _summary_entries.clear()
 
         if entries:
-            lines = ["📋 Hourly Summary"]
-            for ts, chat_id, text, translation in entries:
-                snippet = (text[:100] + "…") if len(text) > 100 else text
-                line = f"• [{chat_id}] {snippet}"
+            # Build lines with blank line separation between each entry
+            lines = [" Hourly Summary\n"]  # Add an extra newline for spacing below header
+            for i, (ts, chat_id, text, translation) in enumerate(entries):
                 if translation:
-                    en = (translation[:50] + "…") if len(translation) > 50 else translation
-                    line += f"  (EN: {en})"
-                lines.append(line)
+                    en_text = (translation[:200] + "…") if len(translation) > 200 else translation
+                    orig_text = (text[:100] + "…") if len(text) > 100 else text
+                    entry_str = f"• {en_text}\n  {orig_text}"
+                else:
+                    orig_text = (text[:200] + "…") if len(text) > 200 else text
+                    entry_str = f"• {orig_text}"
+
+                lines.append(entry_str)
+                # Add a blank line after each entry except the last one
+                if i < len(entries) - 1:
+                    lines.append("")
+
             msg_text = "\n".join(lines)
 
             try:
                 sent_msg = await client.send_message(TARGET_CHAT_ID, msg_text)
-                # Pin the summary message so it’s easy to find
                 await client.pin_message(TARGET_CHAT_ID, sent_msg.id, notify=False)
                 print("[SUMMARY] Hourly summary sent and pinned")
             except Exception as e:
                 print(f"[SUMMARY ERROR] {e}")
 
-        # Schedule next run at :05 past the next hour
         next_run += timedelta(hours=1)
         sleep_seconds = (next_run - datetime.utcnow()).total_seconds()
         if sleep_seconds > 0:
