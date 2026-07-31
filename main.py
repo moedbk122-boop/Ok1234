@@ -38,10 +38,8 @@ client = TelegramClient(
     auto_reconnect=True,
 )
 
-# ---- NEW: storage for hourly summaries ----
-_summary_entries = []          # list of (timestamp, chat_id, text, translation)
-_summary_lock = asyncio.Lock() # optional, not strictly needed in a single-threaded event loop
-# -------------------------------------------
+_summary_entries = []
+_summary_lock = asyncio.Lock()
 
 
 def _translate_sync(text):
@@ -84,28 +82,27 @@ async def handler(event):
         except Exception as e:
             print(f"[ERROR] Translation failed: {e}")
 
-    # ---- NEW: record the event for the hourly summary ----
     if text and text.strip():
         async with _summary_lock:
             _summary_entries.append(
                 (datetime.utcnow(), chat_id, text, translation)
             )
-    # ------------------------------------------------------
 
 
-# ---- NEW: hourly summary task ----
 async def hourly_summary():
     """
-    Every full hour, collect all recorded events, format a clean summary,
-    and send it to TARGET_CHAT_ID. Only sends if there are events.
+    Send a pinned summary at :05 past every hour.
     """
-    # align first run to the next full hour
+    # Calculate the first trigger time (next :05)
     now = datetime.utcnow()
-    next_run = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
-    await asyncio.sleep((next_run - now).total_seconds())
+    if now.minute < 5:
+        next_run = now.replace(minute=5, second=0, microsecond=0)
+    else:
+        next_run = (now + timedelta(hours=1)).replace(minute=5, second=0, microsecond=0)
+    await asyncio.sleep((next_run - datetime.utcnow()).total_seconds())
 
     while True:
-        # snapshot and clear the list safely
+        # Snapshot and clear the entry list
         async with _summary_lock:
             entries = _summary_entries[:]
             _summary_entries.clear()
@@ -113,28 +110,27 @@ async def hourly_summary():
         if entries:
             lines = ["📋 Hourly Summary"]
             for ts, chat_id, text, translation in entries:
-                # truncate original text to 100 chars
                 snippet = (text[:100] + "…") if len(text) > 100 else text
                 line = f"• [{chat_id}] {snippet}"
                 if translation:
-                    # show a short version of the translation
                     en = (translation[:50] + "…") if len(translation) > 50 else translation
                     line += f"  (EN: {en})"
                 lines.append(line)
-            msg = "\n".join(lines)
+            msg_text = "\n".join(lines)
+
             try:
-                await client.send_message(TARGET_CHAT_ID, msg)
-                print("[SUMMARY] Hourly summary sent")
+                sent_msg = await client.send_message(TARGET_CHAT_ID, msg_text)
+                # Pin the summary message so it’s easy to find
+                await client.pin_message(TARGET_CHAT_ID, sent_msg.id, notify=False)
+                print("[SUMMARY] Hourly summary sent and pinned")
             except Exception as e:
                 print(f"[SUMMARY ERROR] {e}")
 
-        # schedule next run in exactly one hour
+        # Schedule next run at :05 past the next hour
         next_run += timedelta(hours=1)
-        now = datetime.utcnow()
-        sleep_seconds = (next_run - now).total_seconds()
+        sleep_seconds = (next_run - datetime.utcnow()).total_seconds()
         if sleep_seconds > 0:
             await asyncio.sleep(sleep_seconds)
-# -----------------------------------
 
 
 async def keepalive():
@@ -153,9 +149,7 @@ async def main():
     print(f"[ONLINE] Logged in as {me.first_name} (@{me.username})")
     print(f"Watching {len(SOURCE_CHAT_IDS)} chats → {TARGET_CHAT_ID}")
     asyncio.create_task(keepalive())
-    # ---- NEW: start the hourly summary task ----
     asyncio.create_task(hourly_summary())
-    # --------------------------------------------
     await client.run_until_disconnected()
 
 
